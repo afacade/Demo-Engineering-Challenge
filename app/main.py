@@ -38,7 +38,18 @@ def parse_csv(upload: UploadFile, name: str) -> list[dict]:
             status_code=400,
             detail=f"{name}: expected columns {expected}, got {reader.fieldnames}",
         )
-    return list(reader)
+    # The data has store ids like " store_a" and "STORE_A", and item numbers
+    # written as "1001.0" - normalize both on the way in so lookups hit and
+    # the join against the catalog works. Rows with a trailing comma parse
+    # fine: DictReader keeps the extra empty field under a key we never read.
+    rows = []
+    for row in reader:
+        if "store_id" in row:
+            row["store_id"] = row["store_id"].strip().lower()
+        if "item_number" in row and row["item_number"]:
+            row["item_number"] = int(float(row["item_number"]))
+        rows.append(row)
+    return rows
 
 
 @app.post("/load")
@@ -67,6 +78,7 @@ def load_data(
                 columns = EXPECTED_COLUMNS[name]
                 placeholders = ", ".join("?" for _ in columns)
                 values = [tuple(row[col] or None for col in columns) for row in rows]
+                values = list(dict.fromkeys(values))  # drop exact duplicate rows
                 # delete + insert makes /load idempotent: re-uploading is safe
                 conn.execute(f"DELETE FROM {name}")
                 conn.executemany(f"INSERT INTO {name} VALUES ({placeholders})", values)
@@ -79,6 +91,8 @@ def load_data(
 
 @app.get("/stores/{store_id}/recommendations")
 def get_recommendations(store_id: str, day: str):
+    # accept the same messy store ids that appear in the data ("STORE_A" etc.)
+    store_id = store_id.strip().lower()
     try:
         date.fromisoformat(day)
     except ValueError:
@@ -97,11 +111,12 @@ def get_recommendations(store_id: str, day: str):
 
         # LEFT JOIN because some recommendations reference items that are
         # missing from the catalog - serve those with null name/category
-        # rather than dropping them
+        # rather than dropping them. MAX(qty, 0) because a negative
+        # recommendation means "order nothing", not "order -5 pieces".
         rows = conn.execute(
             """
             SELECT r.item_number, i.name, i.category, r.delivery_day,
-                   r.recommended_quantity
+                   MAX(r.recommended_quantity, 0) AS recommended_quantity
             FROM order_recommendations r
             LEFT JOIN items i ON i.item_number = r.item_number
             WHERE r.store_id = ? AND r.ordering_day = ?
