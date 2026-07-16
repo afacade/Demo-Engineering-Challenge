@@ -1,5 +1,6 @@
 import csv
 import io
+import logging
 from datetime import date
 
 from fastapi import FastAPI, HTTPException, UploadFile
@@ -7,6 +8,7 @@ from fastapi import FastAPI, HTTPException, UploadFile
 from app.db import get_connection
 
 app = FastAPI(title="FreshFlow Recommendations")
+logger = logging.getLogger("uvicorn.error")
 
 # Used both to validate uploads and to build the INSERT statements,
 # so a file with unexpected columns is rejected instead of half-ingested
@@ -83,6 +85,16 @@ def load_data(
                 conn.execute(f"DELETE FROM {name}")
                 conn.executemany(f"INSERT INTO {name} VALUES ({placeholders})", values)
                 counts[name] = len(values)
+    except Exception:
+        # leaving the `with conn` block on an exception rolls the whole
+        # transaction back, so the deletes above never took effect -
+        # tell the caller that instead of a bare 500
+        logger.exception("load failed, transaction rolled back")
+        raise HTTPException(
+            status_code=500,
+            detail="Loading failed and was rolled back. "
+                   "Previously loaded data is unchanged - fix the files and retry /load.",
+        )
     finally:
         conn.close()
 
@@ -132,3 +144,8 @@ def get_recommendations(store_id: str, day: str):
         "day": day,
         "recommendations": [dict(row) for row in rows],
     }
+
+
+@app.get("/healthcheck")
+def get_healthcheck():
+    return {"works": True}

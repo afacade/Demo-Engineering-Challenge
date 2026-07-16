@@ -128,6 +128,26 @@ def test_wrong_columns_rejected(client):
     assert response.status_code == 400
 
 
+def test_failed_load_keeps_previous_data(client):
+    load_files(client)
+
+    # two different rows with the same primary key make the insert blow up
+    # mid-transaction, after the delete already ran
+    bad_items = (
+        "item_number,name,category,is_bio,purchase_price,suggested_retail_price\n"
+        "1001,Organic Bananas,Fruits,False,0.89,1.49\n"
+        "1001,Not The Same Bananas,Fruits,False,0.89,1.49\n"
+    )
+    response = load_files(client, items_csv=bad_items)
+    assert response.status_code == 500
+    assert "unchanged" in response.json()["detail"]
+
+    # the rollback means the first load is still fully there
+    response = client.get("/stores/store_a/recommendations", params={"day": "2024-01-01"})
+    assert len(response.json()["recommendations"]) == 2
+    assert response.json()["recommendations"][0]["name"] == "Organic Bananas"
+
+
 def test_invalid_day_format_rejected(client):
     load_files(client)
     response = client.get("/stores/store_a/recommendations", params={"day": "not-a-date"})
