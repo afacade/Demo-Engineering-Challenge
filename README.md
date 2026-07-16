@@ -66,6 +66,7 @@ docker run -p 8000:8000 -v freshflow-data:/data -e DB_PATH=/data/freshflow.db fr
 | Querying before any data was loaded | `404` with a hint to call `/load` |
 | `day` not in `YYYY-MM-DD` format | `400` |
 | A CSV with wrong/missing columns | `400`, nothing gets ingested |
+| Load fails partway through | `500`, transaction rolled back, previously loaded data unchanged |
 
 `day` matches the **ordering day** of a recommendation, since the question the
 service answers is "what should this store order today". Calling `/load` again
@@ -127,11 +128,13 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-12 tests cover the happy path, the error responses, and one test per
-data-quality issue above.
+13 tests cover the happy path, the error responses, the rollback of a failed
+load, and one test per data-quality issue above.
 
 ## What I would do next
 
+- Pin dependency versions for reproducible builds
 - Filters on the recommendations endpoint (e.g. by category) once real
   consumers exist
+- Move to Postgres + migrations if the service needed multiple instances
 - CI that runs the tests and builds the image on every push
